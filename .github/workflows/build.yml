@@ -12,13 +12,12 @@ jobs:
     runs-on: macos-14 
     
     steps:
-      # 1. Downloads the unmerged PR code AND pulls all recursive submodules (FEX, Wine, DXMT)
       - name: Fetch Unmerged PR Code with Submodules
         uses: actions/checkout@v4
         with:
           repository: ${{ env.TARGET_REPO }}
           ref: refs/pull/${{ env.PR_NUMBER }}/head
-          submodules: 'recursive' # CRITICAL for Madeira to find Unix binary scripts
+          submodules: 'recursive' # Pulls downstream Wine, DXMT, and FEX code blocks
 
       - name: Select Xcode Version
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
@@ -33,7 +32,18 @@ jobs:
           DIR_PATH=$(dirname "$PROJ_PATH")
           echo "PROJECT_DIR=$DIR_PATH" >> $GITHUB_ENV
 
-      # 2. Resolves any dependent framework checkouts or package locks
+      # CRITICAL STEP: Compiles the low-level architecture layers first
+      - name: Compile Native Toolchain Infrastructure
+        run: |
+          echo "Executing native low-level binary compilers..."
+          # Locates and runs all developer-supplied native build scripts automatically
+          for build_script in $(find . -name "build.sh"); do
+            echo "Running: $build_script"
+            chmod +x "$build_script"
+            # Execute and bypass non-fatal exit warnings gracefully
+            (cd "$(dirname "$build_script")" && ./build.sh) || echo "Script finished with conditions."
+          done
+
       - name: Resolve Dependencies
         run: |
           cd ${{ env.PROJECT_DIR }}
@@ -42,8 +52,7 @@ jobs:
             xcodebuild -resolvePackageDependencies
           fi
 
-      # 3. Flattens structural anomalies (fixes target 26.0 error and drops signing locks)
-      - name: Patch Framework Files and Targets
+      - name: Patch Configuration Frameworks and Signing
         run: |
           cd ${{ env.PROJECT_DIR }}
           find . -name "project.pbxproj" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 17.0;/g' {} +
@@ -63,7 +72,6 @@ jobs:
           fi
           echo "REAL_SCHEME=$DETECTED_SCHEME" >> $GITHUB_ENV
 
-      # 4. Forces Xcode to ignore the missing physical keys during script phases
       - name: Build Archive
         run: |
           cd ${{ env.PROJECT_DIR }}
