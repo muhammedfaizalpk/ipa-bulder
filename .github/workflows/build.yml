@@ -1,0 +1,54 @@
+name: Build Specific iOS PR
+
+on:
+  workflow_dispatch: # Allows you to manually trigger it with a click
+
+env:
+  TARGET_REPO: "willfaust/Madeira"           # 1. Change to the repository you want to test
+  PR_NUMBER: "265"                    # 2. Change to the Pull Request number
+  SCHEME_NAME: "MadeiraEpic"              # 3. Change to the target app's name
+
+jobs:
+  build:
+    runs-on: macos-14
+    
+    steps:
+      - name: Checkout Empty Repo
+        uses: actions/checkout@v4
+
+      # Fetches the unmerged pull request code directly from the web
+      - name: Fetch Unmerged PR Code
+        run: |
+          git init
+          git remote add origin https://github.com{{ env.TARGET_REPO }}.git
+          git fetch origin pull/${{ env.PR_NUMBER }}/head:pr-branch
+          git checkout pr-branch
+
+      - name: Select Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Resolve Dependencies
+        run: |
+          if [ -f "Podfile" ]; then pod install; fi 
+
+      - name: Build Archive
+        run: |
+          # Detects if the project uses a Workspace or a Project file automatically
+          if [ -d *.xcworkspace ]; then
+            xcodebuild archive -workspace *.xcworkspace -scheme "${{ env.SCHEME_NAME }}" -configuration Release -archivePath $PWD/build/App.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          else
+            xcodebuild archive -project *.xcodeproj -scheme "${{ env.SCHEME_NAME }}" -configuration Release -archivePath $PWD/build/App.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          fi
+
+      - name: Create IPA Container
+        run: |
+          mkdir -p $PWD/build/Payload
+          cp -r $PWD/build/App.xcarchive/Products/Applications/*.app $PWD/build/Payload/
+          cd $PWD/build
+          zip -r App.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-${{ env.PR_NUMBER }}-build
+          path: build/App.ipa
