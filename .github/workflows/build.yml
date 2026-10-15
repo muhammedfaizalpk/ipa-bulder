@@ -42,37 +42,33 @@ jobs:
             xcodebuild -resolvePackageDependencies
           fi
 
-      - name: Force Disable Code Signing
+      # FIXES DEPLOYMENT TARGET ERRORS (Forces version 26.0 targets down to 17.0)
+      - name: Patch Configuration Frameworks and Signing
         run: |
           cd ${{ env.PROJECT_DIR }}
-          echo "Stripping code-signing requirements from xcodeproj configs..."
+          echo "Normalizing ultra-high deployment targets to iOS 17.0..."
+          find . -name "project.pbxproj" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 17.0;/g' {} +
+          
+          echo "Stripping code-signing elements..."
           find . -name "project.pbxproj" -exec sed -i '' 's/DEVELOPMENT_TEAM = [A-Z0-9]*;//g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Distribution";/CODE_SIGN_IDENTITY = "";/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' '/PROVISIONING_PROFILE/d' {} +
 
-      # AUTOMATICALLY DISCOVERS THE EXACT SCHEME NAME
       - name: Auto-Detect Xcode Scheme
         run: |
           cd ${{ env.PROJECT_DIR }}
-          echo "--- Available Schemes Matrix ---"
-          xcodebuild -list
-          
-          # Extracts the first valid build scheme from the project settings
           if [ -d *.xcworkspace ]; then
             DETECTED_SCHEME=$(xcodebuild -workspace *.xcworkspace -list | awk '/Schemes:/{flag=1;next} /^$/{flag=0} flag' | sed 's/^[ \t]*//' | head -n 1)
           else
             DETECTED_SCHEME=$(xcodebuild -project *.xcodeproj -list | awk '/Schemes:/{flag=1;next} /^$/{flag=0} flag' | sed 's/^[ \t]*//' | head -n 1)
           fi
-          
           if [ -z "$DETECTED_SCHEME" ]; then
             echo "::error::Could not auto-detect any Xcode schemes!"
             exit 1
           fi
-          
           echo "REAL_SCHEME=$DETECTED_SCHEME" >> $GITHUB_ENV
-          echo "Successfully targeted real scheme: $DETECTED_SCHEME"
 
       - name: Build Archive
         run: |
