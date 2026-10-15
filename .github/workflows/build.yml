@@ -12,11 +12,13 @@ jobs:
     runs-on: macos-14 
     
     steps:
-      - name: Fetch Unmerged PR Code
+      # 1. Downloads the unmerged PR code AND pulls all recursive submodules (FEX, Wine, DXMT)
+      - name: Fetch Unmerged PR Code with Submodules
         uses: actions/checkout@v4
         with:
           repository: ${{ env.TARGET_REPO }}
           ref: refs/pull/${{ env.PR_NUMBER }}/head
+          submodules: 'recursive' # CRITICAL for Madeira to find Unix binary scripts
 
       - name: Select Xcode Version
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
@@ -25,31 +27,26 @@ jobs:
         run: |
           PROJ_PATH=$(find . -name "*.xcodeproj" -o -name "*.xcworkspace" | head -n 1)
           if [ -z "$PROJ_PATH" ]; then
-            echo "::error::No Xcode project found in the repository!"
+            echo "::error::No Xcode project found!"
             exit 1
           fi
           DIR_PATH=$(dirname "$PROJ_PATH")
           echo "PROJECT_DIR=$DIR_PATH" >> $GITHUB_ENV
-          echo "Found project directory at: $DIR_PATH"
 
+      # 2. Resolves any dependent framework checkouts or package locks
       - name: Resolve Dependencies
         run: |
           cd ${{ env.PROJECT_DIR }}
-          if [ -f "Podfile" ]; then 
-            pod install || echo "Pod install failed, attempting to continue..."
-          fi
+          if [ -f "Podfile" ]; then pod install || echo "Continuing..."; fi
           if ls *.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved >/dev/null 2>&1; then
             xcodebuild -resolvePackageDependencies
           fi
 
-      # FIXES DEPLOYMENT TARGET ERRORS (Forces version 26.0 targets down to 17.0)
-      - name: Patch Configuration Frameworks and Signing
+      # 3. Flattens structural anomalies (fixes target 26.0 error and drops signing locks)
+      - name: Patch Framework Files and Targets
         run: |
           cd ${{ env.PROJECT_DIR }}
-          echo "Normalizing ultra-high deployment targets to iOS 17.0..."
           find . -name "project.pbxproj" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*;/IPHONEOS_DEPLOYMENT_TARGET = 17.0;/g' {} +
-          
-          echo "Stripping code-signing elements..."
           find . -name "project.pbxproj" -exec sed -i '' 's/DEVELOPMENT_TEAM = [A-Z0-9]*;//g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";/g' {} +
@@ -64,12 +61,9 @@ jobs:
           else
             DETECTED_SCHEME=$(xcodebuild -project *.xcodeproj -list | awk '/Schemes:/{flag=1;next} /^$/{flag=0} flag' | sed 's/^[ \t]*//' | head -n 1)
           fi
-          if [ -z "$DETECTED_SCHEME" ]; then
-            echo "::error::Could not auto-detect any Xcode schemes!"
-            exit 1
-          fi
           echo "REAL_SCHEME=$DETECTED_SCHEME" >> $GITHUB_ENV
 
+      # 4. Forces Xcode to ignore the missing physical keys during script phases
       - name: Build Archive
         run: |
           cd ${{ env.PROJECT_DIR }}
@@ -87,19 +81,16 @@ jobs:
         run: |
           cd ${{ env.PROJECT_DIR }}
           mkdir -p build/Payload
-          
           APP_PATH=$(find build/App.xcarchive/Products/Applications/ -name "*.app" | head -n 1)
           if [ -z "$APP_PATH" ]; then
-            echo "::error::Compiled .app bundle not found in archive!"
+            echo "::error::Compiled .app bundle not found!"
             exit 1
           fi
-          
           cp -r "$APP_PATH" build/Payload/
-          cd build
-          zip -r App.ipa Payload
+          cd build && zip -r App.ipa Payload
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pr-${{ env.PR_NUMBER }}-build
+          name: Madeira-PR-${{ env.PR_NUMBER }}-Unsigned
           path: ${{ env.PROJECT_DIR }}/build/App.ipa
