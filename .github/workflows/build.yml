@@ -10,36 +10,41 @@ env:
 
 jobs:
   build:
-    runs-on: macos-14
+    # Using macos-14 as macOS-latest might have queue bottlenecks
+    runs-on: macos-14 
     
     steps:
-      - name: Checkout Empty Repo
-        uses: actions/checkout@v4
-
-      # Fetches the unmerged pull request code directly from the web
+      # 1. Pulls the unmerged PR branch code automatically and safely
       - name: Fetch Unmerged PR Code
-        run: |
-          git init
-          git remote add origin https://github.com{{ env.TARGET_REPO }}.git
-          git fetch origin pull/${{ env.PR_NUMBER }}/head:pr-branch
-          git checkout pr-branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
 
       - name: Select Xcode Version
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
 
+      # 2. Resolves Swift Packages or CocoaPods dependencies automatically
       - name: Resolve Dependencies
         run: |
-          if [ -f "Podfile" ]; then pod install; fi 
+          if [ -f "Podfile" ]; then 
+            pod install || echo "Pod install failed, attempting to continue..."
+          fi
+          if ls *.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved >/dev/null 2>&1; then
+            xcodebuild -resolvePackageDependencies
+          fi
 
+      # 3. Compiles the app using a robust fallback layout
       - name: Build Archive
         run: |
-          # Detects if the project uses a Workspace or a Project file automatically
+          mkdir -p $PWD/build
           if [ -d *.xcworkspace ]; then
             xcodebuild archive -workspace *.xcworkspace -scheme "${{ env.SCHEME_NAME }}" -configuration Release -archivePath $PWD/build/App.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
           else
             xcodebuild archive -project *.xcodeproj -scheme "${{ env.SCHEME_NAME }}" -configuration Release -archivePath $PWD/build/App.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
           fi
 
+      # 4. Packs it into the .ipa container structure
       - name: Create IPA Container
         run: |
           mkdir -p $PWD/build/Payload
@@ -47,6 +52,7 @@ jobs:
           cd $PWD/build
           zip -r App.ipa Payload
 
+      # 5. Uploads the file for download
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
