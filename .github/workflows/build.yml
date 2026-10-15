@@ -6,8 +6,7 @@ on:
 env:
   TARGET_REPO: "willfaust/Madeira"           # 1. Change to the repository you want to test
   PR_NUMBER: "265"                    # 2. Change to the Pull Request number
-  SCHEME_NAME: "MadeiraEpic"              # 3. Change to the target app's name
-
+  
 jobs:
   build:
     runs-on: macos-14 
@@ -43,7 +42,6 @@ jobs:
             xcodebuild -resolvePackageDependencies
           fi
 
-      # THIS STEP CRUSHES SIGNING ERRORS (Removes profiles, code-sign parameters, and team requirements)
       - name: Force Disable Code Signing
         run: |
           cd ${{ env.PROJECT_DIR }}
@@ -54,18 +52,39 @@ jobs:
           find . -name "project.pbxproj" -exec sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Distribution";/CODE_SIGN_IDENTITY = "";/g' {} +
           find . -name "project.pbxproj" -exec sed -i '' '/PROVISIONING_PROFILE/d' {} +
 
+      # AUTOMATICALLY DISCOVERS THE EXACT SCHEME NAME
+      - name: Auto-Detect Xcode Scheme
+        run: |
+          cd ${{ env.PROJECT_DIR }}
+          echo "--- Available Schemes Matrix ---"
+          xcodebuild -list
+          
+          # Extracts the first valid build scheme from the project settings
+          if [ -d *.xcworkspace ]; then
+            DETECTED_SCHEME=$(xcodebuild -workspace *.xcworkspace -list | awk '/Schemes:/{flag=1;next} /^$/{flag=0} flag' | sed 's/^[ \t]*//' | head -n 1)
+          else
+            DETECTED_SCHEME=$(xcodebuild -project *.xcodeproj -list | awk '/Schemes:/{flag=1;next} /^$/{flag=0} flag' | sed 's/^[ \t]*//' | head -n 1)
+          fi
+          
+          if [ -z "$DETECTED_SCHEME" ]; then
+            echo "::error::Could not auto-detect any Xcode schemes!"
+            exit 1
+          fi
+          
+          echo "REAL_SCHEME=$DETECTED_SCHEME" >> $GITHUB_ENV
+          echo "Successfully targeted real scheme: $DETECTED_SCHEME"
+
       - name: Build Archive
         run: |
           cd ${{ env.PROJECT_DIR }}
           mkdir -p build
           
-          # Pass extensive signing bypass flags directly to the build engine
           BUILD_FLAGS="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=\"\" CODE_SIGN_ENTITLEMENTS=\"\" PROVISIONING_PROFILE=\"\" AD_HOC_CODE_SIGNING_ALLOWED=YES"
           
           if [ -d *.xcworkspace ]; then
-            xcodebuild archive -workspace *.xcworkspace -scheme "${{ env.SCHEME_NAME }}" -configuration Release -archivePath build/App.xcarchive $BUILD_FLAGS
+            xcodebuild archive -workspace *.xcworkspace -scheme "${{ env.REAL_SCHEME }}" -configuration Release -archivePath build/App.xcarchive $BUILD_FLAGS
           else
-            xcodebuild archive -project *.xcodeproj -scheme "${{ env.SCHEME_NAME }}" -configuration Release -archivePath build/App.xcarchive $BUILD_FLAGS
+            xcodebuild archive -project *.xcodeproj -scheme "${{ env.REAL_SCHEME }}" -configuration Release -archivePath build/App.xcarchive $BUILD_FLAGS
           fi
 
       - name: Create IPA Container
@@ -73,7 +92,6 @@ jobs:
           cd ${{ env.PROJECT_DIR }}
           mkdir -p build/Payload
           
-          # Find and copy the actual .app product binary safely
           APP_PATH=$(find build/App.xcarchive/Products/Applications/ -name "*.app" | head -n 1)
           if [ -z "$APP_PATH" ]; then
             echo "::error::Compiled .app bundle not found in archive!"
